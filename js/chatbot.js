@@ -1,5 +1,7 @@
-/* Hihi Digitizing - Chatbot (works offline with built-in knowledge base;
-   optionally upgrades to a real AI via a proxy endpoint, see CONFIG.aiEndpoint) */
+/* Hihi Digitizing - Chatbot
+   - Works on its own with a built-in smart FAQ (English, Urdu, Roman Urdu).
+   - Becomes a real AI assistant as soon as CONFIG.aiEndpoint is set
+     (see worker/README.md). If the AI is down it silently falls back to the FAQ. */
 (function () {
   "use strict";
 
@@ -8,64 +10,190 @@
     whatsapp: "923452669812",
     email: "hihidigitizing@gmail.com",
     phone: "+92 345 2669812",
-    // Paste your Cloudflare Worker URL here to turn on real AI answers (see worker/README.md).
-    // Leave empty to use only the built-in smart FAQ bot.
+    // Paste your Cloudflare Worker URL here, e.g. "https://hihi-bot.yourname.workers.dev"
+    // Leave empty to use only the built-in FAQ bot.
     aiEndpoint: ""
   };
-
-  var SYSTEM_PROMPT =
-    "You are the friendly assistant of Hihi Digitizing Services, an embroidery digitizing and vector art studio in Landhi, Karachi, Pakistan. " +
-    "Services: embroidery digitizing (logos, text, designs), raster to vector (vector art for screen printing), 3D puff logos, patch logo digitizing, portrait digitizing. " +
-    "Contact: WhatsApp +92 345 2669812, email hihidigitizing@gmail.com. " +
-    "Price list (USD): Hats/Beanies/Visors $15, turnaround 2 to 4 hours; Left Chest/Right Chest/Sleeves $15, 2 to 4 hours; Front Chest/Jacket Back $30, 6 to 10 hours; Raster to Vector $15, 4 to 8 hours. " +
-    "Only quote these prices. For anything else (portraits, patches, 3D puff, very large or complex designs) do not invent a price, ask them to send artwork on WhatsApp for a quote. " +
-    "Reply in the same language as the user (English, Urdu or Roman Urdu). Keep answers under 80 words.";
 
   var wa = function (text) {
     return "https://wa.me/" + CONFIG.whatsapp + "?text=" + encodeURIComponent(text);
   };
 
+  /* ---------- language detection: en / ru (Roman Urdu) / ur (Urdu script) ---------- */
+  var RU = {};
+  ("kaise kese kaisay kya kia hai hain hy aap mujhe mjhe mujhy chahiye chahye chaiye kitna kitne kitni krna karna karo kro " +
+   "mein mai yar yaar bhai shukriya shukria theek thik acha achha nahi nhe nahin bata batao btao bataiye " +
+   "kab kahan kidhar paisa qeemat kimat mera meri mere hamara tum tumhara apka aapka apki aapki karwana krwana banwana " +
+   "haal sab sb koi koi jawab jawaab sawal swal").split(" ").forEach(function (w) { RU[w] = 1; });
+
+  var lastLang = "en";
+  function norm(s) { return s.toLowerCase().replace(/[^a-z0-9\u0600-\u06ff\s]/g, " "); }
+  function detect(text) {
+    if (/[\u0600-\u06FF]/.test(text)) return (lastLang = "ur");
+    var w = norm(text).split(/\s+/).filter(Boolean);
+    var hits = w.filter(function (x) { return RU[x]; }).length;
+    if (hits >= 1 && (hits >= 2 || w.length <= 4 || hits / w.length >= 0.2)) return (lastLang = "ru");
+    if (w.length <= 2 && lastLang !== "en") return lastLang; // short/ambiguous: keep the language in use
+    return (lastLang = "en");
+  }
+
+  /* ---------- built-in knowledge base ---------- */
+  // a = { en, ru, ur }, w = weight (intent entries beat topic entries)
   var KB = [
-    { k: ["hello", "hi", "hey", "salam", "assalam", "aoa", "hola"], a: "Assalam-o-Alaikum! Welcome to Hihi Digitizing Services. How can I help you today?" },
-    { k: ["service", "services", "offer", "what do you do", "kya karte", "kaam"], a: "We offer:\n• Embroidery Digitizing\n• Raster to Vector (vector art)\n• 3D Puff Logos\n• Patch Logo Digitizing\n• Portrait Digitizing\n\nTell me what you need and I will guide you." },
-    { k: ["hat", "hats", "cap", "caps", "beanie", "beanies", "visor", "visors", "topi"], a: "Hats, Beanies and Visors digitizing is $15, delivered in 2 to 4 hours." },
-    { k: ["chest", "sleeve", "sleeves", "left chest", "right chest"], a: "Left Chest, Right Chest and Sleeves digitizing is $15, delivered in 2 to 4 hours." },
-    { k: ["jacket", "jacket back", "front chest"], a: "Front Chest and Jacket Back digitizing is $30, delivered in 6 to 10 hours." },
-    { k: ["embroidery", "digitizing", "digitising", "dst", "pes", "emb", "stitch", "logo"], a: "We turn logos and artwork into smooth, stitch-ready embroidery files for caps, hoodies, jackets, polos, uniforms and more. Send your artwork and tell us the size and fabric for a free quote." },
-    { k: ["vector", "raster", "screen print", "ai file", "eps", "svg", "redraw"], a: "Our vector service converts low-resolution images into clean, scalable vector files (AI/EPS/SVG/PDF) that are perfect for screen printing, vinyl and large-format printing. Price: $15, delivered in 4 to 8 hours." },
-    { k: ["3d", "puff", "puffy"], a: "3D puff digitizing is one of our specialities. It gives raised, bold lettering and logos on caps and hoodies. Share your logo and cap/garment type and we will quote you." },
-    { k: ["patch", "patches"], a: "We digitize patches for uniforms, promotional items and custom apparel, with clean borders, durable stitching and vibrant results." },
-    { k: ["portrait", "photo", "face"], a: "Portrait digitizing turns a photo into a detailed stitched artwork. Send a clear, high-quality photo and the size you want." },
-    { k: ["price", "pricing", "cost", "rate", "rates", "charges", "kitna", "qeemat", "kimat", "paisa", "paise", "price list", "dollar"], a: "Our prices:\n• Hats, Beanies, Visors: $15 (2 to 4 hours)\n• Left Chest, Right Chest, Sleeves: $15 (2 to 4 hours)\n• Front Chest, Jacket Back: $30 (6 to 10 hours)\n• Raster to Vector: $15 (4 to 8 hours)\n\nFor 3D puff, patches, portraits or very large designs, send your artwork for an exact quote.", chips: ["Get a free quote", "Turnaround time"] },
-    { k: ["time", "turnaround", "delivery", "how long", "fast", "urgent", "kitni der", "kab tak", "deadline", "rush", "hours", "ghante"], a: "Turnaround times:\n• Hats, Beanies, Visors: 2 to 4 hours\n• Left/Right Chest, Sleeves: 2 to 4 hours\n• Front Chest, Jacket Back: 6 to 10 hours\n• Raster to Vector: 4 to 8 hours\n\nFor rush orders, mention it on WhatsApp.", chips: ["Pricing"] },
-    { k: ["format", "file", "send", "artwork", "jpg", "png", "pdf", "upload"], a: "You can send artwork as JPG, PNG, PDF or AI. The clearer the image, the better the result. Share it on WhatsApp or by email and mention the final size and garment type." },
-    { k: ["revision", "change", "edit", "fix", "correction", "mistake"], a: "If something is not right, tell us and we will review it. Please see our Refund Policy page for full details." },
-    { k: ["refund", "money back", "return"], a: "Please read our Refund Policy page (link in the footer) for the full terms. For any specific order issue, message us on WhatsApp." },
-    { k: ["contact", "whatsapp", "call", "phone", "number", "email", "mail", "raabta", "rabta"], a: "You can reach us at:\n📱 WhatsApp / Phone: " + CONFIG.phone + "\n✉️ " + CONFIG.email, chips: ["Open WhatsApp"] },
-    { k: ["address", "location", "where", "karachi", "landhi", "office", "kahan"], a: "We are located at Majeed Colony, Landhi, Karachi, Pakistan. We serve clients online worldwide." },
-    { k: ["payment", "pay", "easypaisa", "jazzcash", "bank", "paypal", "advance"], a: "For payment options, please confirm on WhatsApp when you place your order and we will share the details." },
-    { k: ["portfolio", "sample", "work", "example", "gallery", "samples"], a: "You can see our work on the Portfolio page. Want me to take you there?", chips: ["Open Portfolio"] },
-    { k: ["thanks", "thank", "shukriya", "shukria", "jazak"], a: "You are welcome! Anything else I can help you with?" },
-    { k: ["bye", "goodbye", "allah hafiz", "khuda hafiz"], a: "Allah Hafiz! Have a great day." }
+    { k: ["assalam", "salam", "aoa", "سلام", "السلام"], w: 2.5, a: {
+      en: "Walaikum Assalam! Welcome to Hihi Digitizing Services. How can I help you today?",
+      ru: "Walaikum Assalam! Hihi Digitizing Services mein khush aamdeed. Main aapki kya madad kar sakta hoon?",
+      ur: "وعلیکم السلام! ہیہی ڈیجیٹائزنگ سروسز میں خوش آمدید۔ میں آپ کی کیا مدد کر سکتا ہوں؟" }, home: 1 },
+    { k: ["hello", "hi", "hey", "hola", "ہیلو"], w: 1.5, a: {
+      en: "Hello! Welcome to Hihi Digitizing Services. How can I help you today?",
+      ru: "Hello! Hihi Digitizing Services mein khush aamdeed. Main aapki kya madad kar sakta hoon?",
+      ur: "ہیلو! ہیہی ڈیجیٹائزنگ سروسز میں خوش آمدید۔ میں آپ کی کیا مدد کر سکتا ہوں؟" }, home: 1 },
+    { k: ["how are you", "how r u", "how are u", "how you doing", "kaise ho", "kese ho", "kaisay ho", "kaise hain", "kese hain", "aap kaise", "ap kaise", "kya haal", "kia haal", "kia hal", "kya hal", "haal chal", "khairiyat", "کیسے ہیں", "کیسے ہو", "آپ کیسے", "حال"], w: 3, a: {
+      en: "I'm doing great, thank you for asking! \uD83D\uDE0A How are you? Tell me what you need and I'll be happy to help with embroidery digitizing, vector art or a free quote.",
+      ru: "Alhamdulillah main bilkul theek hoon, shukriya! \uD83D\uDE0A Aap kaise hain? Embroidery digitizing, vector art ya free quote ke liye bataiye, main madad karunga.",
+      ur: "الحمدللہ میں بالکل ٹھیک ہوں، شکریہ! \uD83D\uDE0A آپ کیسے ہیں؟ ایمبرائیڈری ڈیجیٹائزنگ، ویکٹر آرٹ یا فری کوٹ کے لیے بتائیں، میں مدد کروں گا۔" }, home: 1 },
+    { k: ["who are you", "your name", "are you a bot", "are you human", "are you real", "are you ai", "tum kon", "aap kon", "apka naam", "aapka naam", "tumhara naam", "bot ho", "insan ho", "کون ہو", "آپ کون", "نام کیا"], w: 3, a: {
+      en: "I'm the virtual assistant of Hihi Digitizing Services. I can answer questions about our embroidery digitizing and vector art services, and connect you with our team on WhatsApp for orders.",
+      ru: "Main Hihi Digitizing Services ka virtual assistant hoon. Embroidery digitizing aur vector art ke sawalon ke jawab de sakta hoon, aur order ke liye aapko hamari team se WhatsApp par mila sakta hoon.",
+      ur: "میں ہیہی ڈیجیٹائزنگ سروسز کا ورچوئل اسسٹنٹ ہوں۔ ہماری ایمبرائیڈری ڈیجیٹائزنگ اور ویکٹر آرٹ سروسز کے بارے میں آپ کے سوالوں کے جواب دے سکتا ہوں، اور آرڈر کے لیے آپ کو ہماری ٹیم سے واٹس ایپ پر ملوا سکتا ہوں۔" } },
+    { k: ["service", "services", "offer", "what do you do", "kya karte", "kaam", "khidmat", "sarvis", "خدمات", "سروس", "سروسز"], w: 1.5, a: {
+      en: "We offer:\n• Embroidery Digitizing\n• Raster to Vector (vector art)\n• 3D Puff Logos\n• Patch Logo Digitizing\n• Portrait Digitizing\n\nTell me what you need and I will guide you.",
+      ru: "Hamari services:\n• Embroidery Digitizing\n• Raster to Vector (vector art)\n• 3D Puff Logos\n• Patch Logo Digitizing\n• Portrait Digitizing\n\nBataiye aapko kis cheez ki zaroorat hai, main guide karta hoon.",
+      ur: "ہماری سروسز:\n• ایمبرائیڈری ڈیجیٹائزنگ\n• ریسٹر ٹو ویکٹر (ویکٹر آرٹ)\n• 3D پف لوگو\n• پیچ لوگو ڈیجیٹائزنگ\n• پورٹریٹ ڈیجیٹائزنگ\n\nبتائیں آپ کو کس چیز کی ضرورت ہے، میں رہنمائی کرتا ہوں۔" } },
+    { k: ["embroidery", "embroidry", "digitizing", "digitising", "dst", "pes", "emb", "stitch", "logo", "ایمبرائیڈری", "ڈیجیٹائز", "لوگو"], a: {
+      en: "We turn logos and artwork into smooth, stitch-ready embroidery files for caps, hoodies, jackets, polos, uniforms and more. Send your artwork with the size and fabric for a free quote.",
+      ru: "Hum logos aur artwork ko caps, hoodies, jackets, polos aur uniforms ke liye smooth, stitch-ready embroidery files mein convert karte hain. Artwork, size aur fabric bhejein aur free quote lein.",
+      ur: "ہم لوگو اور آرٹ ورک کو ٹوپیوں، ہوڈیز، جیکٹس، پولو اور یونیفارم کے لیے صاف اور سلائی کے لیے تیار ایمبرائیڈری فائلوں میں بدلتے ہیں۔ آرٹ ورک، سائز اور کپڑے کی تفصیل بھیجیں اور فری کوٹ لیں۔" } },
+    { k: ["vector", "raster", "screen print", "ai file", "eps", "svg", "redraw", "ویکٹر"], a: {
+      en: "Our vector service converts low-resolution images into clean, scalable vector files (AI, EPS, SVG or PDF), perfect for screen printing, vinyl and large-format printing.",
+      ru: "Hamari vector service low-resolution images ko clean, scalable vector files (AI, EPS, SVG ya PDF) mein convert karti hai, jo screen printing, vinyl aur large-format printing ke liye perfect hain.",
+      ur: "ہماری ویکٹر سروس کم ریزولوشن تصاویر کو صاف اور قابلِ توسیع ویکٹر فائلوں (AI، EPS، SVG یا PDF) میں بدلتی ہے جو اسکرین پرنٹنگ، ونائل اور بڑے سائز کی پرنٹنگ کے لیے بہترین ہیں۔" } },
+    { k: ["3d", "puff", "puffy", "پف"], a: {
+      en: "3D puff digitizing is one of our specialities. It gives raised, bold lettering and logos on caps, hoodies and jackets. Share your logo and garment type and we will quote you.",
+      ru: "3D puff digitizing hamari speciality hai. Isse caps, hoodies aur jackets par ubhra hua, bold lettering aur logo banta hai. Apna logo aur garment type bhejein, hum quote de denge.",
+      ur: "تھری ڈی پف ڈیجیٹائزنگ ہماری خاصیت ہے۔ اس سے ٹوپیوں، ہوڈیز اور جیکٹس پر ابھرے ہوئے نمایاں لوگو اور لکھائی بنتی ہے۔ اپنا لوگو اور کپڑے کی قسم بھیجیں، ہم کوٹ دے دیں گے۔" } },
+    { k: ["patch", "patches", "پیچ"], a: {
+      en: "We digitize patches for uniforms, promotional items and custom apparel, with clean borders, durable stitching and vibrant results.",
+      ru: "Hum uniforms, promotional items aur custom apparel ke liye patches digitize karte hain, clean borders aur mazboot stitching ke saath.",
+      ur: "ہم یونیفارم، پروموشنل آئٹمز اور کسٹم کپڑوں کے لیے پیچ ڈیجیٹائز کرتے ہیں، صاف کناروں اور پائیدار سلائی کے ساتھ۔" } },
+    { k: ["portrait", "photo", "face", "پورٹریٹ", "تصویر"], a: {
+      en: "Portrait digitizing turns a photo into detailed stitched artwork. Send a clear, high-quality photo and the size you want.",
+      ru: "Portrait digitizing photo ko detailed stitched artwork mein badal deta hai. Saaf, high-quality photo aur apni marzi ka size bhejein.",
+      ur: "پورٹریٹ ڈیجیٹائزنگ تصویر کو تفصیلی سلائی والے آرٹ ورک میں بدل دیتی ہے۔ صاف اور اچھے معیار کی تصویر اور مطلوبہ سائز بھیجیں۔" } },
+    { k: ["price", "pricing", "cost", "rate", "rates", "charges", "charge", "kitna", "kitne", "qeemat", "kimat", "paisa", "paise", "قیمت", "ریٹ", "کتنے", "کتنا"], w: 2.2, chips: ["Get a free quote"], a: {
+      en: "Pricing depends on design size, stitch count and complexity, so we quote per design, and the quote is free. Send your artwork and I'll get you a quote. Want me to open WhatsApp with a ready message?",
+      ru: "Price design ke size, stitch count aur complexity par depend karti hai, is liye hum har design ka alag quote dete hain, aur quote bilkul free hai. Artwork bhejein, hum price bata denge. WhatsApp par ready message khol doon?",
+      ur: "قیمت ڈیزائن کے سائز، سلائیوں کی تعداد اور پیچیدگی پر منحصر ہے، اس لیے ہم ہر ڈیزائن کا الگ کوٹ دیتے ہیں اور کوٹ مفت ہے۔ آرٹ ورک بھیجیں، ہم قیمت بتا دیں گے۔ کیا واٹس ایپ پر تیار پیغام کھول دوں؟" } },
+    { k: ["time", "turnaround", "delivery", "how long", "fast", "urgent", "kitni der", "kab tak", "deadline", "rush", "جلدی", "کتنی دیر", "ڈیلیوری"], w: 2, a: {
+      en: "We focus on quick turnaround with top quality. For urgent or rush orders, mention it in your message and we will confirm the delivery time for your design.",
+      ru: "Hum quick turnaround aur top quality par focus karte hain. Urgent ya rush order ho to apne message mein likh dein, hum aapke design ka delivery time confirm kar denge.",
+      ur: "ہم بہترین معیار کے ساتھ جلد ڈیلیوری پر توجہ دیتے ہیں۔ اگر آرڈر فوری ہو تو پیغام میں لکھ دیں، ہم آپ کے ڈیزائن کا ڈیلیوری ٹائم بتا دیں گے۔" } },
+    { k: ["format", "formats", "file", "files", "send", "artwork", "jpg", "png", "pdf", "upload", "فائل", "فارمیٹ"], w: 1.5, a: {
+      en: "For embroidery we deliver machine formats like DST, PES, EMB and more on request. Vector work comes as AI, EPS, SVG or PDF. You can send artwork as JPG, PNG or PDF; the clearer the image, the better the result. Share it on WhatsApp or by email with the final size and garment type.",
+      ru: "Embroidery ke liye hum DST, PES, EMB aur request par dusre machine formats dete hain. Vector work AI, EPS, SVG ya PDF mein milta hai. Aap artwork JPG, PNG ya PDF mein bhej sakte hain; image jitni saaf hogi result utna behtar hoga. WhatsApp ya email par final size aur garment type ke saath bhejein.",
+      ur: "ایمبرائیڈری کے لیے ہم DST، PES، EMB اور درخواست پر دیگر مشین فارمیٹس دیتے ہیں۔ ویکٹر کام AI، EPS، SVG یا PDF میں ملتا ہے۔ آپ آرٹ ورک JPG، PNG یا PDF میں بھیج سکتے ہیں؛ تصویر جتنی صاف ہوگی نتیجہ اتنا بہتر ہوگا۔ واٹس ایپ یا ای میل پر سائز اور کپڑے کی قسم کے ساتھ بھیجیں۔" } },
+    { k: ["revision", "change", "changes", "edit", "fix", "correction", "mistake", "تبدیلی"], a: {
+      en: "If something is not right, tell us and we will review it. Please see our Refund Policy page for details.",
+      ru: "Agar kuch theek na ho to humein batayein, hum review karenge. Tafseel ke liye hamari Refund Policy page dekhein.",
+      ur: "اگر کوئی چیز درست نہ ہو تو ہمیں بتائیں، ہم جائزہ لیں گے۔ تفصیل کے لیے ہمارا ریفنڈ پالیسی صفحہ دیکھیں۔" } },
+    { k: ["refund", "money back", "return", "ریفنڈ", "واپسی"], w: 2, a: {
+      en: "Refunds may be considered if we make a clear mistake, such as delivering something that does not match the approved design. Email hihidigitizing@gmail.com within 7 days of receiving your order with your order number and details. Full terms are on our Refund Policy page.",
+      ru: "Agar hamari taraf se clear ghalti ho (jaise approved design se different kaam), to refund consider kiya ja sakta hai. Order milne ke 7 din ke andar hihidigitizing@gmail.com par order number aur tafseel ke saath email karein. Poori shartein Refund Policy page par hain.",
+      ur: "اگر ہماری طرف سے واضح غلطی ہو (مثلاً منظور شدہ ڈیزائن سے مختلف کام) تو ریفنڈ پر غور کیا جا سکتا ہے۔ آرڈر ملنے کے 7 دن کے اندر hihidigitizing@gmail.com پر آرڈر نمبر اور تفصیل کے ساتھ ای میل کریں۔ مکمل شرائط ریفنڈ پالیسی صفحے پر ہیں۔" } },
+    { k: ["contact", "whatsapp", "call", "phone", "number", "email", "mail", "raabta", "rabta", "رابطہ", "نمبر", "ای میل", "واٹس"], w: 2, chips: ["Open WhatsApp"], a: {
+      en: "You can reach us at:\n\uD83D\uDCF1 WhatsApp / Phone: " + CONFIG.phone + "\n\u2709\uFE0F " + CONFIG.email,
+      ru: "Aap humse yahan rabta kar sakte hain:\n\uD83D\uDCF1 WhatsApp / Phone: " + CONFIG.phone + "\n\u2709\uFE0F " + CONFIG.email,
+      ur: "آپ ہم سے یہاں رابطہ کر سکتے ہیں:\n\uD83D\uDCF1 واٹس ایپ / فون: " + CONFIG.phone + "\n\u2709\uFE0F " + CONFIG.email } },
+    { k: ["address", "location", "where", "karachi", "landhi", "office", "kahan", "kidhar", "پتہ", "کہاں", "کراچی"], w: 2, a: {
+      en: "We are located at Majeed Colony, Landhi, Karachi, Pakistan. We work fully online and serve clients worldwide.",
+      ru: "Hamara address Majeed Colony, Landhi, Karachi, Pakistan hai. Hum poori tarah online kaam karte hain aur dunya bhar ke clients ko serve karte hain.",
+      ur: "ہمارا پتہ مجید کالونی، لانڈھی، کراچی، پاکستان ہے۔ ہم مکمل آن لائن کام کرتے ہیں اور دنیا بھر کے کلائنٹس کو سروس دیتے ہیں۔" } },
+    { k: ["payment", "pay", "easypaisa", "jazzcash", "bank", "paypal", "advance", "ادائیگی", "پیمنٹ"], w: 2, a: {
+      en: "For payment options, please confirm on WhatsApp when you place your order and we will share the details.",
+      ru: "Payment options ke liye order dete waqt WhatsApp par confirm karein, hum details bata denge.",
+      ur: "ادائیگی کے طریقوں کے لیے آرڈر دیتے وقت واٹس ایپ پر رابطہ کریں، ہم تفصیل بتا دیں گے۔" } },
+    { k: ["portfolio", "sample", "samples", "work", "example", "examples", "gallery", "نمونہ", "نمونے"], a: {
+      en: "You can see our work on the Portfolio page. Want me to take you there?",
+      ru: "Hamara kaam Portfolio page par dekh sakte hain. Kya main wahan le chalun?",
+      ur: "ہمارا کام پورٹ فولیو صفحے پر دیکھ سکتے ہیں۔ کیا میں آپ کو وہاں لے چلوں؟" }, chips: ["Open Portfolio"] },
+    { k: ["thanks", "thank", "thankyou", "shukriya", "shukria", "jazak", "jazakallah", "شکریہ"], w: 2, a: {
+      en: "You are welcome! Anything else I can help you with?",
+      ru: "Khushi hui madad kar ke! Kuch aur poochna ho to bataiye.",
+      ur: "آپ کا شکریہ! کچھ اور پوچھنا ہو تو بتائیں۔" } },
+    { k: ["ok", "okay", "alright", "theek", "thik", "acha", "achha", "ٹھیک", "اچھا"], w: 1.2, a: {
+      en: "Great! Is there anything else I can help you with?",
+      ru: "Theek hai! Kuch aur madad chahiye to bataiye.",
+      ur: "ٹھیک ہے! کچھ اور مدد چاہیے تو بتائیں۔" } },
+    { k: ["bye", "goodbye", "allah hafiz", "khuda hafiz", "الوداع", "اللہ حافظ"], w: 2, a: {
+      en: "Allah Hafiz! Have a great day.",
+      ru: "Allah Hafiz! Aapka din acha guzre.",
+      ur: "اللہ حافظ! آپ کا دن اچھا گزرے۔" } }
   ];
 
-  var FALLBACK = "I am not fully sure about that one. The quickest way is to talk to our team directly. Want me to open WhatsApp for you?";
-  var MAIN_CHIPS = ["Our services", "Get a free quote", "Pricing", "Contact us"];
+  var FALLBACK = {
+    en: "I'm not fully sure about that one, but our team will gladly help. Want me to open WhatsApp for you? You can also ask me about our services, pricing or a free quote.",
+    ru: "Is baare mein mujhe poori tarah pata nahi, lekin hamari team zaroor madad karegi. WhatsApp khol doon? Aap services, price ya free quote ke baare mein bhi pooch sakte hain.",
+    ur: "اس بارے میں مجھے پوری طرح معلوم نہیں، لیکن ہماری ٹیم ضرور مدد کرے گی۔ کیا واٹس ایپ کھول دوں؟ آپ سروسز، قیمت یا فری کوٹ کے بارے میں بھی پوچھ سکتے ہیں۔"
+  };
+
+  /* ---------- quick-reply buttons (labels in 3 languages) ---------- */
+  var CHIP = {
+    services:  { en: "Our services",     ru: "Hamari services",  ur: "ہماری سروسز" },
+    quote:     { en: "Get a free quote", ru: "Free quote lein",  ur: "فری کوٹ لیں" },
+    pricing:   { en: "Pricing",          ru: "Price / rate",     ur: "قیمت" },
+    contact:   { en: "Contact us",       ru: "Rabta karein",     ur: "رابطہ کریں" },
+    whatsapp:  { en: "Open WhatsApp",    ru: "WhatsApp kholen",  ur: "واٹس ایپ کھولیں" },
+    portfolio: { en: "Open Portfolio",   ru: "Portfolio dekhein", ur: "پورٹ فولیو دیکھیں" },
+    formats:   { en: "File formats",     ru: "File formats",     ur: "فائل فارمیٹس" },
+    maps:      { en: "Open map",         ru: "Map kholen",       ur: "نقشہ کھولیں" },
+    skip:      { en: "Skip",             ru: "Skip karein",      ur: "چھوڑ دیں" },
+    cancel:    { en: "Cancel",           ru: "Cancel karein",    ur: "منسوخ کریں" },
+    attach:    { en: "Attach file",      ru: "File attach karein", ur: "فائل لگائیں" }
+  };
+  var LABEL2ID = {};
+  Object.keys(CHIP).forEach(function (id) { ["en", "ru", "ur"].forEach(function (l) { LABEL2ID[CHIP[id][l].toLowerCase()] = id; }); });
+  var MAIN_CHIPS = ["services", "quote", "pricing", "contact"];
+  // follow-up buttons shown after each FAQ answer (keyed by the entry's first keyword)
+  var NEXT = {
+    "service": ["quote", "pricing", "portfolio"], "embroidery": ["quote", "pricing", "formats"],
+    "vector": ["quote", "formats"], "3d": ["quote", "portfolio"], "patch": ["quote", "portfolio"],
+    "portrait": ["quote", "formats"], "time": ["quote", "whatsapp"], "format": ["quote", "whatsapp"],
+    "revision": ["contact"], "refund": ["contact"], "address": ["maps", "whatsapp"], "payment": ["whatsapp"],
+    "how are you": ["quote", "services"], "who are you": ["services", "quote"]
+  };
+  var MAPS_URL = "https://www.google.com/maps/search/?api=1&query=Majeed+Colony+Landhi+Karachi";
 
   var history = [];
-  var quote = null; // active quote flow state
+  var quote = null;
+  var busy = false;
+  var userName = "";
   var els = {};
 
-  function norm(s) { return s.toLowerCase().replace(/[^a-z0-9\u0600-\u06ff\s]/g, " "); }
+  function lev(a, b) {
+    var m = a.length, n = b.length, i, j, d = [];
+    for (i = 0; i <= m; i++) { d[i] = [i]; }
+    for (j = 1; j <= n; j++) d[0][j] = j;
+    for (i = 1; i <= m; i++) for (j = 1; j <= n; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[m][n];
+  }
 
+  // keyword matching with typo tolerance ("embrodery", "pricng", "vectr" still work)
   function match(text) {
-    var t = " " + norm(text) + " ", best = null, bestScore = 0;
+    var t = " " + norm(text) + " ", toks = t.trim().split(/\s+/), best = null, bestScore = 0;
     KB.forEach(function (e) {
       var score = 0;
       e.k.forEach(function (w) {
         if (t.indexOf(" " + w + " ") > -1) score += 2 + w.length / 10;
         else if (w.length > 3 && t.indexOf(w) > -1) score += 1;
+        else if (w.length >= 5 && /^[a-z]+$/.test(w)) {
+          var lim = w.length >= 8 ? 2 : 1;
+          for (var i = 0; i < toks.length; i++) {
+            if (Math.abs(toks[i].length - w.length) <= lim && lev(toks[i], w) <= lim) { score += 1.6; break; }
+          }
+        }
       });
+      score *= (e.w || 1);
       if (score > bestScore) { best = e; bestScore = score; }
     });
     return bestScore >= 1 ? best : null;
@@ -73,10 +201,29 @@
 
   function scroll() { els.msgs.scrollTop = els.msgs.scrollHeight; }
 
+  /* clickable links / emails / phone numbers inside bot messages (built safely, no innerHTML) */
+  var RX = /(https?:\/\/[^\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z.]{2,}|\+92 ?\d{3} ?\d{7})/g;
+  function rich(el, text) {
+    var last = 0, m; RX.lastIndex = 0;
+    while ((m = RX.exec(text))) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var tok = m[0], tail = "", core = tok.replace(/[.,;:!?)]+$/, function (x) { tail = x; return ""; });
+      var a = document.createElement("a"); a.target = "_blank"; a.rel = "noopener";
+      if (core.charAt(0) === "+") a.href = "https://wa.me/" + core.replace(/\D/g, "");
+      else if (core.indexOf("http") === 0) a.href = core;
+      else a.href = "mailto:" + core;
+      a.textContent = core; el.appendChild(a);
+      if (tail) el.appendChild(document.createTextNode(tail));
+      last = m.index + tok.length;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  }
+
   function addMsg(text, who, save) {
     var d = document.createElement("div");
     d.className = "hc-m " + (who === "user" ? "hc-user" : "hc-bot");
-    d.textContent = text;
+    if (who === "user") d.textContent = text; else rich(d, text);
+    if (/[\u0600-\u06FF]/.test(text)) d.dir = "auto";
     els.msgs.appendChild(d);
     scroll();
     if (save !== false) { history.push({ role: who === "user" ? "user" : "assistant", content: text }); persist(); }
@@ -85,10 +232,13 @@
 
   function addChips(list) {
     var old = els.msgs.querySelectorAll(".hc-chips"); old.forEach(function (o) { o.remove(); });
+    if (!list || !list.length) return;
     var w = document.createElement("div"); w.className = "hc-chips";
     list.forEach(function (c) {
-      var b = document.createElement("button"); b.className = "hc-chip"; b.textContent = c;
-      b.onclick = function () { handle(c); };
+      var id = CHIP[c] ? c : LABEL2ID[String(c).toLowerCase()];
+      var label = id ? (CHIP[id][lastLang] || CHIP[id].en) : c;
+      var b = document.createElement("button"); b.className = "hc-chip"; b.textContent = label;
+      b.onclick = function () { handle(label); };
       w.appendChild(b);
     });
     els.msgs.appendChild(w); scroll();
@@ -101,66 +251,159 @@
 
   function reply(text, chips, delay) {
     var t = typing();
-    setTimeout(function () { t.remove(); addMsg(text, "bot"); if (chips) addChips(chips); }, delay || 550);
+    setTimeout(function () { t.remove(); addMsg(text, "bot"); if (chips) addChips(chips); }, delay || Math.min(1300, 400 + text.length * 6));
   }
 
   function persist() { try { sessionStorage.setItem("hc_hist", JSON.stringify(history.slice(-30))); } catch (e) {} }
 
-  /* ---------- quote flow ---------- */
-  var SERVICES = ["Embroidery Digitizing", "Raster to Vector", "3D Puff Logo", "Patch Digitizing", "Portrait Digitizing"];
-  function startQuote() {
-    quote = { step: "service" };
-    reply("Great, let us get your free quote. Which service do you need? (Starting prices: caps/chest/sleeves $15, front chest/jacket back $30, vector $15)", SERVICES);
+  function linkBtn(href, label, color) {
+    var a = document.createElement("a"); a.href = href; a.target = "_blank"; a.rel = "noopener"; a.className = "hc-chip";
+    a.style.cssText = "display:inline-block;text-decoration:none;background:" + color + ";border-color:" + color + ";color:#fff";
+    a.textContent = label; return a;
   }
-  function quoteStep(text) {
-    if (quote.step === "service") { quote.service = text; quote.step = "details"; return reply("Got it. Tell me the design size (e.g. 4 inch wide), garment/cap type and any special notes.", ["Skip"]); }
-    if (quote.step === "details") { quote.details = text === "Skip" ? "-" : text; quote.step = "name"; return reply("And your name please?"); }
-    if (quote.step === "name") {
-      quote.name = text;
-      var msg = "Hi Hihi Digitizing, I am " + quote.name + ". I need a quote for: " + quote.service + ". Details: " + quote.details + ". (Sent from website chatbot)";
-      var url = wa(msg); quote = null;
-      var t = typing();
-      setTimeout(function () {
-        t.remove();
-        var d = addMsg("Thanks! Tap the button below to send your request on WhatsApp, then attach your artwork there.", "bot");
-        var a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener"; a.className = "hc-chip";
-        a.style.cssText = "display:inline-block;margin-top:8px;background:#25D366;border-color:#25D366;color:#fff;text-decoration:none";
-        a.textContent = "Send on WhatsApp"; d.appendChild(document.createElement("br")); d.appendChild(a); scroll();
-      }, 600);
+
+  /* ---------- quote flow: service -> details -> name -> phone -> artwork file -> send ---------- */
+  var SERVICES = ["Embroidery Digitizing", "Raster to Vector", "3D Puff Logo", "Patch Digitizing", "Portrait Digitizing"];
+  var MAX_FILE = 8 * 1024 * 1024; // email delivery allows about 10 MB in total
+  var Q = {
+    start:   { en: "Great, let us get your free quote. Which service do you need?", ru: "Zabardast, chaliye aapka free quote banate hain. Aapko kaun si service chahiye?", ur: "بہت خوب، آپ کا فری کوٹ بناتے ہیں۔ آپ کو کون سی سروس چاہیے؟" },
+    gotfile: { en: "Got your file ({f}). Let us get your free quote. Which service do you need?", ru: "Aapki file ({f}) mil gayi. Chaliye free quote banate hain. Aapko kaun si service chahiye?", ur: "آپ کی فائل ({f}) مل گئی۔ فری کوٹ بناتے ہیں۔ آپ کو کون سی سروس چاہیے؟" },
+    details: { en: "Got it. Tell me the design size (e.g. 4 inch wide), garment/cap type and any special notes.", ru: "Theek hai. Design ka size (jaise 4 inch wide), garment/cap type aur koi khaas notes bata dein.", ur: "ٹھیک ہے۔ ڈیزائن کا سائز (مثلاً 4 انچ چوڑا)، کپڑے/ٹوپی کی قسم اور کوئی خاص بات بتا دیں۔" },
+    name:    { en: "And your name please?", ru: "Aur aapka naam?", ur: "اور آپ کا نام؟" },
+    phone:   { en: "Optional: your phone/WhatsApp number so the team can reach you faster (or tap Skip).", ru: "Optional: apna phone/WhatsApp number likh dein taake team jaldi rabta kar sake (ya Skip karein).", ur: "اختیاری: اپنا فون/واٹس ایپ نمبر لکھ دیں تاکہ ٹیم جلد رابطہ کر سکے (یا چھوڑ دیں)۔" },
+    file:    { en: "Do you want to attach your artwork (logo/design)? Any image, PDF or design file up to 8 MB works. For several files, send a zip.", ru: "Kya aap apna artwork (logo/design) attach karna chahte hain? Koi bhi image, PDF ya design file 8 MB tak chalegi. Kai files hon to zip bana kar bhejein.", ur: "کیا آپ اپنا آرٹ ورک (لوگو/ڈیزائن) لگانا چاہتے ہیں؟ کوئی بھی تصویر، PDF یا ڈیزائن فائل 8 MB تک چلے گی۔ ایک سے زیادہ فائلیں ہوں تو زپ بنا کر بھیجیں۔" },
+    attached:{ en: "Got your file, thank you. Let us continue.", ru: "File mil gayi, shukriya. Chaliye aage barhte hain.", ur: "فائل مل گئی، شکریہ۔ آگے بڑھتے ہیں۔" },
+    toolarge:{ en: "That file is larger than 8 MB. Please send a smaller file or zip it, or send it directly on WhatsApp.", ru: "Ye file 8 MB se badi hai. Choti file bhejein ya zip karein, ya seedha WhatsApp par bhej dein.", ur: "یہ فائل 8 MB سے بڑی ہے۔ چھوٹی فائل بھیجیں یا زپ کریں، یا سیدھا واٹس ایپ پر بھیج دیں۔" },
+    done:    { en: "Thanks {n}! Here is your request. Choose how you want to send it to our team: WhatsApp or email.", ru: "Shukriya {n}! Ye aapki request hai. Chunein ke hamari team ko kaise bhejna hai: WhatsApp ya email.", ur: "شکریہ {n}! یہ آپ کی درخواست ہے۔ چنیں کہ ہماری ٹیم کو کیسے بھیجنا ہے: واٹس ایپ یا ای میل۔" },
+    filetip: { en: "Tip: email sends your file automatically. On WhatsApp you attach it with the paperclip.", ru: "Tip: email file khud bhej deta hai. WhatsApp mein file paperclip se attach karni hoti hai.", ur: "ٹپ: ای میل فائل خود بھیج دیتا ہے۔ واٹس ایپ میں فائل پیپر کلپ سے لگانی ہوتی ہے۔" },
+    wanote:  { en: "In WhatsApp, tap the paperclip and attach your file: {f}", ru: "WhatsApp mein paperclip dabayein aur apni file attach karein: {f}", ur: "واٹس ایپ میں پیپر کلپ دبائیں اور اپنی فائل لگائیں: {f}" },
+    sent:    { en: "\u2705 Your request has been sent to our team by email{f}. We will contact you soon. For a faster reply you can also message us on WhatsApp.", ru: "\u2705 Aapki request email ke zariye hamari team ko bhej di gayi hai{f}. Hum jald rabta karenge. Jaldi jawab ke liye WhatsApp par bhi message kar sakte hain.", ur: "\u2705 آپ کی درخواست ای میل کے ذریعے ہماری ٹیم کو بھیج دی گئی ہے{f}۔ ہم جلد رابطہ کریں گے۔ جلد جواب کے لیے واٹس ایپ پر بھی پیغام کر سکتے ہیں۔" },
+    withfile:{ en: " (with your file)", ru: " (file ke saath)", ur: " (فائل کے ساتھ)" },
+    cancel:  { en: "No problem, I cancelled that. What else can I help you with?", ru: "Koi baat nahi, maine cancel kar diya. Aur kya madad kar sakta hoon?", ur: "کوئی بات نہیں، میں نے منسوخ کر دیا۔ اور کیا مدد کر سکتا ہوں؟" }
+  };
+
+  function hasFile() { return !!(els.file && els.file.files && els.file.files.length); }
+  function fmtSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+  function clearFile() { try { if (els.file) els.file.value = ""; } catch (e) {} }
+
+  function startQuote(intro) { quote = { step: "service" }; reply(intro || Q.start[lastLang], SERVICES.concat(["cancel"])); }
+
+  function quoteStep(text, id) {
+    if (quote.step === "service") { quote.service = text; quote.step = "details"; return reply(Q.details[lastLang], ["skip", "cancel"]); }
+    if (quote.step === "details") { quote.details = id === "skip" ? "-" : text; quote.step = "name"; return reply(Q.name[lastLang]); }
+    if (quote.step === "name") { quote.name = text; userName = text; quote.step = "phone"; return reply(Q.phone[lastLang], ["skip"]); }
+    if (quote.step === "phone") {
+      quote.phone = id === "skip" ? "-" : text;
+      if (hasFile()) return finishQuote();
+      quote.step = "file"; return reply(Q.file[lastLang], ["attach", "skip"]);
+    }
+    if (quote.step === "file") {
+      if (id === "attach") { els.file.click(); return; }
+      if (id === "skip") return finishQuote();
+      return reply(Q.file[lastLang], ["attach", "skip"]);
     }
   }
 
-  /* ---------- AI (optional) ---------- */
-  function askAI(text) {
+  function finishQuote() {
+    var q = quote; quote = null;
+    var f = hasFile() ? els.file.files[0] : null;
+    var fileLine = f ? f.name + " (" + fmtSize(f.size) + ")" : "-";
+    var summary = "Service: " + q.service + "\nDetails: " + q.details + "\nName: " + q.name + "\nPhone: " + q.phone + "\nFile: " + fileLine;
+    var waBody = "Hi Hihi Digitizing, I need a quote.\n" + summary + "\n(Sent from website chatbot)" + (f ? "\n(I will attach my file here)" : "");
     var t = typing();
+    setTimeout(function () {
+      t.remove();
+      var d = addMsg(Q.done[lastLang].replace("{n}", q.name) + "\n\n" + summary + (f ? "\n\n" + Q.filetip[lastLang] : ""), "bot");
+      var box = document.createElement("div"); box.className = "hc-btns";
+      var w = linkBtn(wa(waBody), "Send on WhatsApp", "#25D366");
+      if (f) w.onclick = function () { setTimeout(function () { addMsg(Q.wanote[lastLang].replace("{f}", f.name), "bot"); }, 500); };
+      box.appendChild(w);
+      var m = document.createElement("button"); m.type = "button"; m.className = "hc-chip";
+      m.style.cssText = "background:#17303B;border-color:#17303B;color:#fff";
+      m.textContent = f ? "Send by email (with file)" : "Send by email";
+      m.onclick = function () { m.disabled = true; sendEmail(q, f, fileLine, waBody); };
+      box.appendChild(m); d.appendChild(box); scroll();
+    }, 700);
+  }
+
+  // Email goes through FormSubmit (free, no mail app needed). The file is attached automatically.
+  function sendEmail(q, f, fileLine, waBody) {
+    var form = els.upform;
+    function set(n, v) { form.querySelector('[name="' + n + '"]').value = v; }
+    set("Name", q.name); set("Phone", q.phone); set("Service", q.service); set("Details", q.details);
+    set("Artwork_file", fileLine); set("_subject", "Website quote request: " + q.service + " - " + q.name);
+    var done = false, t = typing();
+    function ok() {
+      if (done) return; done = true; t.remove(); els.frame.onload = null;
+      var d = addMsg(Q.sent[lastLang].replace("{f}", f ? Q.withfile[lastLang] : ""), "bot");
+      var box = document.createElement("div"); box.className = "hc-btns";
+      box.appendChild(linkBtn(wa(waBody), "Also message on WhatsApp", "#25D366"));
+      d.appendChild(box); scroll(); clearFile();
+    }
+    els.frame.onload = ok;
+    form.submit();
+    setTimeout(ok, 10000);
+  }
+
+  /* ---------- AI (optional) ---------- */
+  function cleanHistory() {
+    var h = history.slice(-10);
+    while (h.length && h[0].role !== "user") h.shift(); // API needs the first message from the user
+    return h;
+  }
+
+  function askAI(text) {
+    var t = typing(); busy = true;
+    var ctrl = ("AbortController" in window) ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 25000);
     fetch(CONFIG.aiEndpoint, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ system: SYSTEM_PROMPT, messages: history.slice(-10) })
-    }).then(function (r) { if (!r.ok) throw 0; return r.json(); })
-      .then(function (j) { t.remove(); addMsg(j.reply || FALLBACK, "bot"); })
-      .catch(function () { t.remove(); local(text); });
+      body: JSON.stringify({ messages: cleanHistory() }),
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (r) { if (!r.ok) throw new Error("bad status"); return r.json(); })
+      .then(function (j) {
+        clearTimeout(timer); t.remove(); busy = false;
+        var rep = String(j.reply || "").trim();
+        if (!rep) return local(text);
+        var wantWA = /\[\[WA\]\]/.test(rep);
+        rep = rep.replace(/\[\[WA\]\]/g, "").trim();
+        addMsg(rep, "bot");
+        if (wantWA) addChips(["whatsapp", "quote"]);
+      })
+      .catch(function () { clearTimeout(timer); t.remove(); busy = false; local(text); });
   }
 
   function local(text) {
+    var L = detect(text);
     var m = match(text);
-    if (m) {
-      var chips = m.chips || (m.k[0] === "hello" ? MAIN_CHIPS : null);
-      reply(m.a, chips);
-    } else reply(FALLBACK, ["Open WhatsApp", "Get a free quote"]);
+    if (m) reply(m.a[L] || m.a.en, m.chips || NEXT[m.k[0]] || (m.home ? MAIN_CHIPS : null));
+    else reply(FALLBACK[L], ["whatsapp", "quote"]);
+  }
+
+  function action(id) {
+    if (id === "services") return local("services");
+    if (id === "quote") return startQuote();
+    if (id === "pricing") return local("price");
+    if (id === "contact") return local("contact");
+    if (id === "formats") return local("format");
+    if (id === "attach") { els.file.click(); return; }
+    if (id === "whatsapp") { window.open(wa("Hi Hihi Digitizing, I need some help."), "_blank"); return reply({ en: "Opening WhatsApp for you.", ru: "WhatsApp khol raha hoon.", ur: "واٹس ایپ کھول رہا ہوں۔" }[lastLang], null, 300); }
+    if (id === "maps") { window.open(MAPS_URL, "_blank"); return reply({ en: "Opening our location on the map.", ru: "Map par hamari location khol raha hoon.", ur: "نقشے پر ہماری لوکیشن کھول رہا ہوں۔" }[lastLang], null, 300); }
+    if (id === "portfolio") { reply({ en: "Taking you to the Portfolio page...", ru: "Portfolio page par le ja raha hoon...", ur: "پورٹ فولیو صفحے پر لے جا رہا ہوں..." }[lastLang], null, 300); return setTimeout(function () { location.href = "blog.html"; }, 800); }
+    reply({ en: "What would you like to do?", ru: "Aap kya karna chahte hain?", ur: "آپ کیا کرنا چاہتے ہیں؟" }[lastLang], MAIN_CHIPS);
   }
 
   function handle(text) {
-    text = (text || "").trim(); if (!text) return;
+    text = (text || "").trim(); if (!text || busy) return;
+    var low = text.toLowerCase(), id = LABEL2ID[low] || null;
     addMsg(text, "user");
-    var low = text.toLowerCase();
-    if (quote) return quoteStep(text);
-    if (low === "get a free quote" || /\b(free quote|quotation)\b/.test(low)) return startQuote();
-    if (low === "open whatsapp") { window.open(wa("Hi Hihi Digitizing, I need some help."), "_blank"); return reply("Opening WhatsApp for you."); }
-    if (low === "open portfolio") { reply("Taking you to the Portfolio page..."); return setTimeout(function () { location.href = "blog.html"; }, 700); }
-    if (low === "our services") return local("services");
-    if (low === "contact us") return local("contact");
-    if (low === "pricing") return local("price");
-    if (low === "turnaround time") return local("turnaround");
+    if (!id && !quote && SERVICES.indexOf(text) < 0) detect(text); // keep the language steady inside the quote flow
+    if (quote) {
+      if (id === "cancel" || /^(cancel|stop|exit|back)$/.test(low)) { quote = null; return reply(Q.cancel[lastLang], MAIN_CHIPS); }
+      return quoteStep(text, id);
+    }
+    if (id) return action(id);
+    if (/\b(free quote|quotation|quote)\b|کوٹیشن|فری کوٹ/.test(low)) return startQuote();
     if (CONFIG.aiEndpoint) return askAI(text);
     local(text);
   }
@@ -174,20 +417,43 @@
     box.innerHTML =
       '<div class="hc-head"><div class="hc-avatar"><i class="fas fa-robot"></i></div>' +
       '<div class="hc-title"><b>' + CONFIG.botName + '</b><small>Online</small></div>' +
+      '<a class="hc-hwa" href="' + wa("Hi Hihi Digitizing, I need some help.") + '" target="_blank" rel="noopener" title="Chat on WhatsApp" aria-label="Chat on WhatsApp"><i class="fab fa-whatsapp"></i></a>' +
       '<button id="hc-reset" title="New chat" aria-label="New chat"><i class="fas fa-redo"></i></button>' +
       '<button id="hc-close" aria-label="Close"><i class="fas fa-times"></i></button></div>' +
       '<div class="hc-msgs" id="hc-msgs" aria-live="polite"></div>' +
-      '<form class="hc-foot" id="hc-form"><input id="hc-input" type="text" placeholder="Type your message..." autocomplete="off" maxlength="400">' +
+      '<form class="hc-foot" id="hc-form"><button type="button" id="hc-attach" class="hc-attachbtn" title="Attach artwork" aria-label="Attach artwork"><i class="fas fa-paperclip"></i></button><input id="hc-input" type="text" placeholder="Type your message..." autocomplete="off" maxlength="400">' +
       '<button type="submit" aria-label="Send"><i class="fas fa-paper-plane"></i></button></form>' +
       '<div class="hc-note">Automated assistant. For orders please confirm on WhatsApp.</div>';
     document.body.appendChild(l); document.body.appendChild(teaser); document.body.appendChild(box);
     els = { l: l, box: box, teaser: teaser, msgs: box.querySelector("#hc-msgs"), input: box.querySelector("#hc-input") };
 
+    // hidden form + iframe used to email the quote request with the attached file (FormSubmit)
+    var up = document.createElement("form");
+    up.className = "hc-hiddenform"; up.method = "POST"; up.enctype = "multipart/form-data";
+    up.action = "https://formsubmit.co/" + CONFIG.email; up.target = "hc-upframe";
+    up.innerHTML = '<input type="file" name="attachment" id="hc-file">' +
+      '<input type="hidden" name="_captcha" value="false"><input type="hidden" name="_template" value="table">' +
+      '<input type="hidden" name="_subject" value=""><input type="hidden" name="Name" value=""><input type="hidden" name="Phone" value="">' +
+      '<input type="hidden" name="Service" value=""><input type="hidden" name="Details" value=""><input type="hidden" name="Artwork_file" value="">' +
+      '<input type="text" name="_honey" value="" tabindex="-1" autocomplete="off">';
+    var frame = document.createElement("iframe"); frame.name = "hc-upframe"; frame.className = "hc-hiddenform"; frame.title = "upload";
+    document.body.appendChild(up); document.body.appendChild(frame);
+    els.upform = up; els.frame = frame; els.file = up.querySelector("#hc-file");
+    els.file.onchange = function () {
+      var f = els.file.files && els.file.files[0]; if (!f) return;
+      if (f.size > MAX_FILE) { clearFile(); return reply(Q.toolarge[lastLang], null, 300); }
+      addMsg("\uD83D\uDCCE " + f.name + " (" + fmtSize(f.size) + ")", "user");
+      if (!quote) return startQuote(Q.gotfile[lastLang].replace("{f}", f.name));
+      if (quote.step === "file") return finishQuote();
+      reply(Q.attached[lastLang], null, 300);
+    };
+    box.querySelector("#hc-attach").onclick = function () { els.file.click(); };
+
     function open() { box.classList.add("hc-open"); teaser.style.display = "none"; l.classList.add("hc-seen"); l.style.display = "none"; els.input.focus(); try { sessionStorage.setItem("hc_seen", "1"); } catch (e) {} }
     function close() { box.classList.remove("hc-open"); l.style.display = "flex"; }
     l.onclick = open; teaser.onclick = open;
     box.querySelector("#hc-close").onclick = close;
-    box.querySelector("#hc-reset").onclick = function () { history = []; quote = null; persist(); els.msgs.innerHTML = ""; greet(); };
+    box.querySelector("#hc-reset").onclick = function () { history = []; quote = null; busy = false; lastLang = "en"; userName = ""; clearFile(); persist(); els.msgs.innerHTML = ""; greet(); };
     box.querySelector("#hc-form").onsubmit = function (e) { e.preventDefault(); var v = els.input.value; els.input.value = ""; handle(v); };
 
     var saved = []; try { saved = JSON.parse(sessionStorage.getItem("hc_hist") || "[]"); } catch (e) {}
