@@ -1,0 +1,68 @@
+/* Hihi Digitizing - mobile "app" experience */
+.app-nav,.app-install,.app-toast{display:none}
+
+@media (max-width: 991.98px){
+  html{-webkit-tap-highlight-color:transparent;scroll-behavior:smooth}
+  body{padding-bottom:calc(68px + env(safe-area-inset-bottom));padding-top:env(safe-area-inset-top);animation:appFade .3s ease;overscroll-behavior-y:none}
+  @keyframes appFade{from{opacity:.4}to{opacity:1}}
+  .topbar{display:none!important}
+  /* compact sticky header like an app bar */
+  .navbar{position:sticky;top:0;z-index:1030;background:#fff!important;box-shadow:0 2px 10px rgba(0,0,0,.08);padding-top:6px!important;padding-bottom:6px!important}
+  .navbar-brand img{height:44px;width:auto}
+  .btn,.nav-link,.app-nav a{touch-action:manipulation}
+  .btn.btn-primary,.btn-primary{border-radius:28px}
+  /* hide desktop-style floating button; bottom bar replaces it */
+  .back-to-top{bottom:calc(84px + env(safe-area-inset-bottom))!important;right:14px!important;width:42px;height:42px}
+  /* chatbot sits above the bottom bar */
+  #hc-launcher{bottom:calc(84px + env(safe-area-inset-bottom))!important;left:14px!important;width:54px;height:54px;font-size:22px}
+  #hc-teaser{bottom:calc(148px + env(safe-area-inset-bottom))!important}
+  #hc-box{bottom:calc(76px + env(safe-area-inset-bottom))!important;max-height:calc(100vh - 100px - env(safe-area-inset-bottom))!important;left:8px!important;right:8px!important}
+
+  /* bottom navigation */
+  .app-nav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:1040;background:#fff;
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom));box-shadow:0 -4px 18px rgba(0,0,0,.12);border-top:1px solid #eef0f2}
+  .app-nav a{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    text-decoration:none;color:#6b7a84;font:600 11px/1.1 Inter,Arial,sans-serif;padding:6px 2px;border-radius:12px;transition:.15s}
+  .app-nav a i{font-size:19px}
+  .app-nav a.active{color:#17303B;background:#FCC72033}
+  .app-nav a.active i{color:#d9a400}
+  .app-nav a.app-wa{color:#fff;background:#25D366;margin:0 4px;flex:1.1;box-shadow:0 3px 8px rgba(37,211,102,.45)}
+  .app-nav a:active{transform:scale(.94)}
+
+  /* install banner */
+  .app-install{position:fixed;left:10px;right:10px;bottom:calc(80px + env(safe-area-inset-bottom));z-index:1050;background:#17303B;color:#fff;
+    border-radius:16px;padding:12px;align-items:center;gap:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);font:14px/1.35 Inter,Arial,sans-serif;animation:appUp .35s ease}
+  .app-install.show{display:flex}
+  @keyframes appUp{from{transform:translateY(30px);opacity:0}to{transform:none;opacity:1}}
+  .app-install img{width:46px;height:46px;border-radius:11px;background:#fff;flex-shrink:0}
+  .app-install .ai-t{flex:1;min-width:0}.app-install b{display:block;font-size:15px}
+  .app-install small{opacity:.85;font-size:12px;display:block}
+  .app-install button{border:0;border-radius:20px;font:700 13px Inter,Arial;cursor:pointer}
+  .app-install .ai-go{background:#FCC720;color:#17303B;padding:9px 16px}
+  .app-install .ai-x{background:transparent;color:#fff;font-size:18px;padding:6px 8px;opacity:.75}
+
+  /* while install banner is open, lift chatbot button above it and hide its teaser */
+  body.app-banner-on #hc-launcher{bottom:calc(160px + env(safe-area-inset-bottom))!important}
+  body.app-banner-on #hc-teaser{display:none!important}
+  body.app-banner-on .back-to-top{bottom:calc(160px + env(safe-area-inset-bottom))!important}
+
+  .app-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(90px + env(safe-area-inset-bottom));z-index:1060;background:#17303B;color:#fff;
+    padding:9px 16px;border-radius:20px;font:600 13px Inter,Arial,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.3)}
+  .app-toast.show{display:block}
+}
+
+/* when installed and opened from the home screen */
+@media (display-mode: standalone){
+  .topbar{display:none!important}
+  a[href^="https://www.facebook"],a[href^="https://www.tiktok"]{-webkit-touch-callout:none}
+  body{-webkit-user-select:none;user-select:none}
+  input,textarea,.hc-m{-webkit-user-select:text;user-select:text}
+}
+
+/* WhatsApp floating button: always sits ABOVE the back-to-top arrow */
+.float{bottom:110px!important}
+@media (max-width: 991.98px){
+  .float{right:14px!important;width:54px!important;height:54px!important;bottom:calc(138px + env(safe-area-inset-bottom))!important;z-index:1035}
+  .float .my-float{margin-top:0!important;line-height:54px;font-size:28px}
+  body.app-banner-on .float{bottom:calc(214px + env(safe-area-inset-bottom))!important}
+}
